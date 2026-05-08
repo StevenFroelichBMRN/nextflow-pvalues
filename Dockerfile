@@ -1,13 +1,10 @@
 FROM python:3.11-slim
 
 RUN pip install --no-cache-dir \
-    anndata \
+    anndata==0.10.8 \
     h5py \
     scipy \
     statsmodels \
     numpy \
-    pandas \
+    pandas==2.1.4 \
     pyarrow
-
-COPY bin/extract_pvalues.py /usr/local/bin/extract_pvalues.py
-RUN chmod +x /usr/local/bin/extract_pvalues.py
