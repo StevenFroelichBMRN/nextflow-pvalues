@@ -42,17 +42,19 @@ def detect_columns(obs_df):
 def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_control):
     """Process one h5ad file, return DataFrame of p-values."""
 
-    print(f"Loading full matrix into memory...", flush=True)
+    print(f"Loading h5ad into memory (sparse)...", flush=True)
     adata = ad.read_h5ad(filepath)
     n_cells, n_genes = adata.shape
     print(f"  Shape: {n_cells} cells x {n_genes} genes", flush=True)
 
-    if issparse(adata.X):
-        print(f"  Converting sparse to dense...", flush=True)
-        X_full = np.asarray(adata.X.toarray(), dtype=np.float32)
+    X = adata.X
+    if issparse(X):
+        from scipy.sparse import csr_matrix
+        X = csr_matrix(X)
+        print(f"  Sparse matrix: {X.data.nbytes / 1e9:.1f} GB (nnz={X.nnz:,})", flush=True)
     else:
-        X_full = np.asarray(adata.X, dtype=np.float32)
-    print(f"  Matrix loaded: {X_full.nbytes / 1e9:.1f} GB", flush=True)
+        X = np.asarray(X, dtype=np.float32)
+        print(f"  Dense matrix: {X.nbytes / 1e9:.1f} GB", flush=True)
 
     pert_col, cl_col = detect_columns(adata.obs)
     if pert_col is None:
@@ -68,9 +70,13 @@ def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_contro
     if n_dmso < min_cells_control:
         return None, cell_line, {"status": "skipped", "reason": f"too few DMSO cells ({n_dmso})"}
 
-    print(f"Loading {n_dmso} DMSO control cells...", flush=True)
-    X_dmso = X_full[dmso_mask]
+    print(f"Extracting {n_dmso} DMSO control cells...", flush=True)
+    X_dmso = X[dmso_mask]
+    if issparse(X_dmso):
+        X_dmso = X_dmso.toarray()
+    X_dmso = np.asarray(X_dmso, dtype=np.float32)
     mean_dmso = X_dmso.mean(axis=0)
+    print(f"  DMSO matrix: {X_dmso.nbytes / 1e9:.1f} GB", flush=True)
 
     non_dmso_perts = obs_df[~dmso_mask][pert_col].unique()
     print(f"Processing {len(non_dmso_perts)} perturbations...", flush=True)
@@ -79,13 +85,15 @@ def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_contro
 
     for idx, pert in enumerate(non_dmso_perts):
         pert_mask = (obs_df[pert_col] == pert).values
-        pert_indices = np.where(pert_mask)[0]
-        n_treated = len(pert_indices)
+        n_treated = int(pert_mask.sum())
 
         if n_treated < min_cells_treated:
             continue
 
-        X_treated = X_full[pert_indices]
+        X_treated = X[pert_mask]
+        if issparse(X_treated):
+            X_treated = X_treated.toarray()
+        X_treated = np.asarray(X_treated, dtype=np.float32)
 
         mean_treated = X_treated.mean(axis=0)
         log2fc = (mean_treated - mean_dmso) / np.log(2)
@@ -128,7 +136,7 @@ def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_contro
         if (idx + 1) % 50 == 0:
             print(f"  {idx+1}/{len(non_dmso_perts)} perturbations, {len(all_results):,} results so far", flush=True)
 
-    del X_full, X_dmso
+    del X, X_dmso
     gc.collect()
 
     if all_results:
