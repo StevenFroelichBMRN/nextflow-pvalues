@@ -42,8 +42,17 @@ def detect_columns(obs_df):
 def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_control):
     """Process one h5ad file, return DataFrame of p-values."""
 
-    adata = ad.read_h5ad(filepath, backed='r')
+    print(f"Loading full matrix into memory...", flush=True)
+    adata = ad.read_h5ad(filepath)
     n_cells, n_genes = adata.shape
+    print(f"  Shape: {n_cells} cells x {n_genes} genes", flush=True)
+
+    if issparse(adata.X):
+        print(f"  Converting sparse to dense...", flush=True)
+        X_full = np.asarray(adata.X.toarray(), dtype=np.float32)
+    else:
+        X_full = np.asarray(adata.X, dtype=np.float32)
+    print(f"  Matrix loaded: {X_full.nbytes / 1e9:.1f} GB", flush=True)
 
     pert_col, cl_col = detect_columns(adata.obs)
     if pert_col is None:
@@ -57,15 +66,10 @@ def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_contro
     n_dmso = int(dmso_mask.sum())
 
     if n_dmso < min_cells_control:
-        adata.file.close()
         return None, cell_line, {"status": "skipped", "reason": f"too few DMSO cells ({n_dmso})"}
 
-    dmso_indices = np.where(dmso_mask)[0]
     print(f"Loading {n_dmso} DMSO control cells...", flush=True)
-    X_dmso = adata.X[dmso_indices]
-    if issparse(X_dmso):
-        X_dmso = X_dmso.toarray()
-    X_dmso = np.asarray(X_dmso, dtype=np.float32)
+    X_dmso = X_full[dmso_mask]
     mean_dmso = X_dmso.mean(axis=0)
 
     non_dmso_perts = obs_df[~dmso_mask][pert_col].unique()
@@ -81,10 +85,7 @@ def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_contro
         if n_treated < min_cells_treated:
             continue
 
-        X_treated = adata.X[pert_indices]
-        if issparse(X_treated):
-            X_treated = X_treated.toarray()
-        X_treated = np.asarray(X_treated, dtype=np.float32)
+        X_treated = X_full[pert_indices]
 
         mean_treated = X_treated.mean(axis=0)
         log2fc = (mean_treated - mean_dmso) / np.log(2)
@@ -127,8 +128,7 @@ def process_file(filepath, log2fc_threshold, min_cells_treated, min_cells_contro
         if (idx + 1) % 50 == 0:
             print(f"  {idx+1}/{len(non_dmso_perts)} perturbations, {len(all_results):,} results so far", flush=True)
 
-    adata.file.close()
-    del X_dmso
+    del X_full, X_dmso
     gc.collect()
 
     if all_results:
